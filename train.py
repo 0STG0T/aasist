@@ -11,6 +11,9 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import json
 from pathlib import Path
+from tqdm import tqdm
+import psutil
+import GPUtil
 from data_utils_csv import ASVspoofDataset, get_torchaudio_backend
 from models.AASIST_LARGE import AASIST_LARGE
 
@@ -89,7 +92,12 @@ def train_model(
 
         model.train()
         train_loss = 0
-        for batch_idx, (data, target) in enumerate(train_loader):
+
+        # Create progress bar for training
+        train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]',
+                         disable=dist.get_rank() != 0)
+
+        for batch_idx, (data, target) in enumerate(train_pbar):
             data, target = data.cuda(), target.cuda()
             optimizer.zero_grad()
 
@@ -101,18 +109,45 @@ def train_model(
 
             train_loss += loss.item()
 
+            # Update progress bar
+            if dist.get_rank() == 0:
+                gpu = GPUtil.getGPUs()[dist.get_rank()]
+                train_pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'GPU mem': f'{gpu.memoryUsed}MB',
+                    'GPU util': f'{gpu.load*100:.1f}%'
+                })
+
+        train_pbar.close()
+        avg_train_loss = train_loss / len(train_loader)
+
         # Validation
         model.eval()
         val_loss = 0
         correct = 0
+
+        # Create progress bar for validation
+        val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]',
+                       disable=dist.get_rank() != 0)
+
         with torch.no_grad():
-            for data, target in val_loader:
+            for data, target in val_pbar:
                 data, target = data.cuda(), target.cuda()
                 _, output = model(data)
-                val_loss += criterion(output, target).item()
+                loss = criterion(output, target)
+                val_loss += loss.item()
                 pred = output.argmax(dim=1)
                 correct += pred.eq(target).sum().item()
 
+                # Update progress bar
+                if dist.get_rank() == 0:
+                    gpu = GPUtil.getGPUs()[dist.get_rank()]
+                    val_pbar.set_postfix({
+                        'loss': f'{loss.item():.4f}',
+                        'GPU mem': f'{gpu.memoryUsed}MB'
+                    })
+
+        val_pbar.close()
         val_loss /= len(val_loader)
         accuracy = correct / len(val_dataset)
 
@@ -120,12 +155,13 @@ def train_model(
         if val_loss < best_val_loss and dist.get_rank() == 0:
             best_val_loss = val_loss
             torch.save(model.state_dict(), model_save_path)
+            print(f'\n✓ New best model saved! (val_loss: {val_loss:.4f})')
 
         if dist.get_rank() == 0:
-            print(f'Epoch: {epoch}')
-            print(f'Train Loss: {train_loss/len(train_loader):.4f}')
+            print(f'\nEpoch {epoch+1} Summary:')
+            print(f'Train Loss: {avg_train_loss:.4f}')
             print(f'Val Loss: {val_loss:.4f}')
-            print(f'Val Accuracy: {accuracy:.4f}')
+            print(f'Val Accuracy: {accuracy:.4f}\n')
 
     if num_gpus > 1:
         dist.destroy_process_group()

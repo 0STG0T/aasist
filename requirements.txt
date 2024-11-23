@@ -6,3 +6,5 @@ soundfile>=0.10.3
 librosa>=0.9.0
 scikit-learn>=1.0.0
 tqdm>=4.62.0
+gputil>=1.4.0
+psutil>=5.8.0
