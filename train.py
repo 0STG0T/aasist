@@ -73,7 +73,7 @@ def train_model(train_csv, val_csv, model_save_path, config_path="config/AASIST_
 
             optimizer.zero_grad()
 
-            with autocast():
+            with autocast(device_type=device.type):
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
 
