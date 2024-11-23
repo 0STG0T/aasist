@@ -526,7 +526,6 @@ class Model(nn.Module):
         self.out_layer = nn.Linear(5 * gat_dims[1], 2)
 
     def forward(self, x, Freq_aug=False):
-
         x = x.unsqueeze(1)
         x = self.conv_time(x, mask=Freq_aug)
         x = x.unsqueeze(dim=1)
@@ -605,3 +604,48 @@ class Model(nn.Module):
         output = self.out_layer(last_hidden)
 
         return last_hidden, output
+
+    @torch.no_grad()
+    def predict(self, x):
+        """
+        Predict single sample or batch of samples
+        Args:
+            x: Input tensor of shape (batch_size, nb_samp) or (nb_samp,)
+        Returns:
+            Tuple of (probabilities, predictions)
+        """
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+
+        self.eval()
+        _, logits = self.forward(x)
+        probs = F.softmax(logits, dim=-1)
+        preds = torch.argmax(probs, dim=-1)
+
+        return probs, preds
+
+    def predict_batch(self, x, batch_size=32, device=None):
+        """
+        Predict large batch of samples in smaller batches
+        Args:
+            x: Input tensor of shape (total_samples, nb_samp)
+            batch_size: Size of each mini-batch
+            device: Device to run predictions on
+        Returns:
+            Tuple of (probabilities, predictions)
+        """
+        if device is not None:
+            self.to(device)
+
+        all_probs = []
+        all_preds = []
+
+        for i in range(0, len(x), batch_size):
+            batch = x[i:i + batch_size]
+            if device is not None:
+                batch = batch.to(device)
+            probs, preds = self.predict(batch)
+            all_probs.append(probs.cpu())
+            all_preds.append(preds.cpu())
+
+        return torch.cat(all_probs), torch.cat(all_preds)

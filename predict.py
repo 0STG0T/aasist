@@ -1,78 +1,124 @@
+"""
+Prediction script for AASIST models with batch processing support
+"""
+
 import torch
 import torchaudio
 import argparse
 from pathlib import Path
-from models.AASIST import AASIST
+from models.AASIST import Model as AASIST
 from models.AASIST_LARGE import AASIST_LARGE
+import json
 
-def load_audio(audio_path, target_length=64600):
-    waveform, sample_rate = torchaudio.load(audio_path)
-    if waveform.shape[0] > 1:
-        waveform = torch.mean(waveform, dim=0, keepdim=True)
-    if sample_rate != 16000:
-        resampler = torchaudio.transforms.Resample(sample_rate, 16000)
-        waveform = resampler(waveform)
-    if waveform.shape[1] < target_length:
-        waveform = torch.nn.functional.pad(waveform, (0, target_length - waveform.shape[1]))
-    else:
-        waveform = waveform[:, :target_length]
-    return waveform
+def load_model(model_path, config_path, device='cuda'):
+    """Load trained model"""
+    with open(config_path) as f:
+        config = json.load(f)
 
-def load_model(model_path, model_type='base'):
-    if model_type == 'large':
-        model = AASIST_LARGE()
-    else:
-        model = AASIST()
-    checkpoint = torch.load(model_path, map_location='cpu')
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
+    # Select model architecture
+    model_class = AASIST_LARGE if config['model_config']['architecture'] == 'AASIST_LARGE' else AASIST
+    model = model_class(config['model_config']).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
     return model
 
-def predict_batch(model, wav_paths, device='cuda', batch_size=32):
-    model = model.to(device)
-    model.eval()
+def process_audio(file_path, num_samples=64600, sample_rate=16000):
+    """Load and preprocess audio file"""
+    waveform, sr = torchaudio.load(file_path)
+
+    # Convert to mono if stereo
+    if waveform.shape[0] > 1:
+        waveform = torch.mean(waveform, dim=0, keepdim=True)
+
+    # Resample if necessary
+    if sr != sample_rate:
+        waveform = torchaudio.transforms.Resample(sr, sample_rate)(waveform)
+
+    # Pad or trim
+    if waveform.shape[1] < num_samples:
+        padding = num_samples - waveform.shape[1]
+        waveform = torch.nn.functional.pad(waveform, (0, padding))
+    else:
+        waveform = waveform[:, :num_samples]
+
+    return waveform.squeeze(0)
+
+def predict_file(model, file_path, device='cuda'):
+    """Predict single audio file"""
+    waveform = process_audio(file_path)
+    waveform = waveform.unsqueeze(0).to(device)
+
+    probs, preds = model.predict(waveform)
+    return {
+        'probabilities': probs[0].cpu().numpy(),
+        'prediction': 'spoof' if preds[0].item() == 1 else 'bonafide',
+        'confidence': probs[0][preds[0]].item()
+    }
+
+def predict_batch(model, file_paths, batch_size=32, device='cuda'):
+    """Predict batch of audio files"""
     results = []
-    for i in range(0, len(wav_paths), batch_size):
-        batch_paths = wav_paths[i:i + batch_size]
-        batch_waves = torch.stack([load_audio(path) for path in batch_paths])
-        batch_waves = batch_waves.to(device)
-        with torch.no_grad():
-            _, outputs = model(batch_waves)
-            predictions = torch.sigmoid(outputs).cpu().numpy()
-            results.extend(predictions.tolist())
+    current_batch = []
+
+    for file_path in file_paths:
+        waveform = process_audio(file_path)
+        current_batch.append(waveform)
+
+        if len(current_batch) == batch_size:
+            batch_tensor = torch.stack(current_batch).to(device)
+            probs, preds = model.predict_batch(batch_tensor)
+
+            for i, (prob, pred) in enumerate(zip(probs, preds)):
+                results.append({
+                    'file': file_paths[len(results) + i],
+                    'probabilities': prob.cpu().numpy(),
+                    'prediction': 'spoof' if pred.item() == 1 else 'bonafide',
+                    'confidence': prob[pred].item()
+                })
+            current_batch = []
+
+    # Process remaining files
+    if current_batch:
+        batch_tensor = torch.stack(current_batch).to(device)
+        probs, preds = model.predict_batch(batch_tensor)
+
+        for i, (prob, pred) in enumerate(zip(probs, preds)):
+            results.append({
+                'file': file_paths[len(results) + i],
+                'probabilities': prob.cpu().numpy(),
+                'prediction': 'spoof' if pred.item() == 1 else 'bonafide',
+                'confidence': prob[pred].item()
+            })
+
     return results
 
-def predict_file(model, wav_path, device='cuda'):
-    model = model.to(device)
-    model.eval()
-    waveform = load_audio(wav_path)
-    x_inp = waveform.unsqueeze(0).to(device)
-    with torch.no_grad():
-        _, output = model(x_inp)
-        prediction = torch.sigmoid(output).cpu().numpy()[0]
-    return prediction
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='AASIST Prediction Script')
+    parser.add_argument('--model_path', required=True, help='Path to model weights')
+    parser.add_argument('--config_path', required=True, help='Path to model config')
+    parser.add_argument('--input_path', required=True, help='Path to audio file or directory')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for processing')
+    parser.add_argument('--device', default='cuda', help='Device to run inference on')
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", required=True, help="Path to model checkpoint")
-    parser.add_argument("--wav_path", required=True, help="Path to wav file or directory")
-    parser.add_argument("--model_type", default="base", choices=["base", "large"], help="Model architecture type")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for directory processing")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="Device to run inference on")
     args = parser.parse_args()
 
-    model = load_model(args.model_path, args.model_type)
-    wav_path = Path(args.wav_path)
+    # Load model
+    model = load_model(args.model_path, args.config_path, args.device)
+    model.eval()
 
-    if wav_path.is_file():
-        result = predict_file(model, str(wav_path), args.device)
-        print(f"File: {wav_path}")
-        print(f"Prediction (probability of being bonafide): {result:.4f}")
+    input_path = Path(args.input_path)
+    if input_path.is_file():
+        # Single file prediction
+        result = predict_file(model, input_path, args.device)
+        print(f"File: {input_path}")
+        print(f"Prediction: {result['prediction']}")
+        print(f"Confidence: {result['confidence']:.4f}")
     else:
-        wav_files = list(wav_path.glob("**/*.wav"))
-        results = predict_batch(model, [str(f) for f in wav_files], args.device, args.batch_size)
-        for wav_file, result in zip(wav_files, results):
-            print(f"File: {wav_file}")
-            print(f"Prediction (probability of being bonafide): {result:.4f}")
+        # Batch prediction for directory
+        file_paths = list(input_path.glob('**/*.wav'))
+        results = predict_batch(model, file_paths, args.batch_size, args.device)
+
+        for result in results:
+            print(f"File: {result['file']}")
+            print(f"Prediction: {result['prediction']}")
+            print(f"Confidence: {result['confidence']:.4f}")
+            print("-" * 50)
