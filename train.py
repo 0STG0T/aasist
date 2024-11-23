@@ -153,6 +153,28 @@ if __name__ == '__main__':
     args = parser.parse_args()
     train_model(**vars(args))
 
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train_csv', required=True)
+    parser.add_argument('--val_csv', required=True)
+    parser.add_argument('--model_save_path', required=True)
+    parser.add_argument('--config_path', default='config/AASIST_LARGE.conf')
+
+    args = parser.parse_args()
+    train_model(**vars(args))
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train_csv', required=True)
+    parser.add_argument('--val_csv', required=True)
+    parser.add_argument('--model_save_path', required=True)
+    parser.add_argument('--config_path', default='config/AASIST_LARGE.conf')
+
+    args = parser.parse_args()
+    train_model(**vars(args))
+
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
