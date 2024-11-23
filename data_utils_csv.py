@@ -48,7 +48,7 @@ class ASVspoofDataset(Dataset):
         # Convert label to integer (0 for genuine, 1 for spoof)
         target = int(row['label'])
 
-        return waveform.squeeze(0), torch.tensor(target, dtype=torch.long)
+        return waveform, torch.tensor(target, dtype=torch.long)
 
     @staticmethod
     def collate_fn(batch):
