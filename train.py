@@ -76,65 +76,53 @@ def train_model(
 
     # Training loop
     best_val_loss = float('inf')
-    print(f"\nStarting training on device: {device}")
-    print(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}\n")
+    for epoch in range(config['num_epochs']):
+        # Training phase
+        model.train()
+        train_loss = 0
+        correct_train = 0
+        total_train = 0
 
-    try:
-        for epoch in range(config['num_epochs']):
-            # Training phase
-            model.train()
-            train_loss = 0
-            correct_train = 0
-            total_train = 0
+        train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]')
+        for batch_idx, (data, target) in enumerate(train_pbar):
+            data, target = data.to(device), target.to(device)
 
-            train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]')
-            for batch_idx, (data, target) in enumerate(train_pbar):
-                try:
-                    data, target = data.to(device), target.to(device)
-                    optimizer.zero_grad()
-                    _, output = model(data)
-                    loss = criterion(output, target)
-                    loss.backward()
-                    optimizer.step()
+            optimizer.zero_grad()
+            _, output = model(data)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
 
-                    train_loss += loss.item()
-                    pred = output.argmax(dim=1)
-                    correct_train += pred.eq(target).sum().item()
-                    total_train += target.size(0)
+            train_loss += loss.item()
+            pred = output.argmax(dim=1)
+            correct_train += pred.eq(target).sum().item()
+            total_train += target.size(0)
 
-                    train_pbar.set_postfix({
-                        'loss': f'{loss.item():.4f}',
-                        'acc': f'{100.*correct_train/total_train:.2f}%'
-                    })
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        print(f"\nWARNING: GPU OOM in training batch {batch_idx}. Skipping batch.")
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        continue
-                    raise e
+            train_pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'acc': f'{100.*correct_train/total_train:.2f}%'
+            })
 
-            avg_train_loss = train_loss / len(train_loader)
-            train_accuracy = 100. * correct_train / total_train
+        avg_train_loss = train_loss / len(train_loader)
+        train_accuracy = 100. * correct_train / total_train
 
-            # Validation phase
-            model.eval()
-            val_loss = 0
-            correct_val = 0
-            total_val = 0
+        # Validation phase
+        model.eval()
+        val_loss = 0
+        correct_val = 0
+        total_val = 0
 
-            val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
-            with torch.no_grad():
-                for data, target in val_pbar:
-                    try:
-                        data, target = data.to(device), target.to(device)
-                        _, output = model(data)
-                        loss = criterion(output, target)
+        val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
+        with torch.no_grad():
+            for data, target in val_pbar:
+                data, target = data.to(device), target.to(device)
+                _, output = model(data)
+                loss = criterion(output, target)
 
-                        val_loss += loss.item()
-                        pred = output.argmax(dim=1)
-                        correct_val += pred.eq(target).sum().item()
-                        total_val += target.size(0)
+                val_loss += loss.item()
+                pred = output.argmax(dim=1)
+                correct_val += pred.eq(target).sum().item()
+                total_val += target.size(0)
 
                 val_pbar.set_postfix({
                     'loss': f'{loss.item():.4f}',
@@ -143,6 +131,27 @@ def train_model(
 
         val_loss /= len(val_loader)
         val_accuracy = 100. * correct_val / total_val
+
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), model_save_path)
+            print(f'\n✓ New best model saved! (val_loss: {val_loss:.4f})')
+
+        print(f'\nEpoch {epoch+1} Summary:')
+        print(f'Train Loss: {avg_train_loss:.4f} | Train Accuracy: {train_accuracy:.2f}%')
+        print(f'Val Loss: {val_loss:.4f} | Val Accuracy: {val_accuracy:.2f}%\n')
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train_csv', required=True)
+    parser.add_argument('--val_csv', required=True)
+    parser.add_argument('--model_save_path', required=True)
+    parser.add_argument('--config_path', default='config/AASIST_LARGE.conf')
+
+    args = parser.parse_args()
+    train_model(**vars(args))
 
         # Save best model
         if val_loss < best_val_loss:
