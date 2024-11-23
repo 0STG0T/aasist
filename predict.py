@@ -12,14 +12,23 @@ import json
 
 def load_model(model_path, config_path, device='cuda'):
     """Load trained model"""
-    with open(config_path) as f:
-        config = json.load(f)
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
 
-    # Select model architecture
-    model_class = AASIST_LARGE if config['model_config']['architecture'] == 'AASIST_LARGE' else AASIST
-    model = model_class(config['model_config']).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    return model
+        # Select model architecture
+        model_class = AASIST_LARGE if config['model_config'].get('architecture') == 'AASIST_LARGE' else AASIST
+        model = model_class(config['model_config'])
+
+        # Load state dict
+        state_dict = torch.load(model_path, map_location=device, weights_only=True)
+        if isinstance(state_dict, dict) and 'model_state_dict' in state_dict:
+            state_dict = state_dict['model_state_dict']
+        model.load_state_dict(state_dict)
+        model.to(device)
+        return model
+    except Exception as e:
+        raise RuntimeError(f"Error loading model: {str(e)}")
 
 def process_audio(file_path, num_samples=64600, sample_rate=16000):
     """Load and preprocess audio file"""
@@ -47,45 +56,59 @@ def predict_file(model, file_path, device='cuda'):
     waveform = process_audio(file_path)
     waveform = waveform.unsqueeze(0).to(device)
 
-    probs, preds = model.predict(waveform)
+    with torch.no_grad():
+        _, output = model(waveform)
+        probs = torch.softmax(output, dim=1)
+        pred = output.argmax(dim=1)
+
     return {
         'probabilities': probs[0].cpu().numpy(),
-        'prediction': 'spoof' if preds[0].item() == 1 else 'bonafide',
-        'confidence': probs[0][preds[0]].item()
+        'prediction': 'spoof' if pred[0].item() == 1 else 'genuine',
+        'confidence': probs[0][pred[0]].item()
     }
 
 def predict_batch(model, file_paths, batch_size=32, device='cuda'):
     """Predict batch of audio files"""
     results = []
     current_batch = []
+    file_list = list(file_paths)  # Convert to list if it's a generator
+    batch_files = []
 
-    for file_path in file_paths:
+    for file_path in file_list:
         waveform = process_audio(file_path)
         current_batch.append(waveform)
+        batch_files.append(file_path)
 
         if len(current_batch) == batch_size:
             batch_tensor = torch.stack(current_batch).to(device)
-            probs, preds = model.predict_batch(batch_tensor)
+            with torch.no_grad():
+                _, output = model(batch_tensor)
+                probs = torch.softmax(output, dim=1)
+                preds = output.argmax(dim=1)
 
             for i, (prob, pred) in enumerate(zip(probs, preds)):
                 results.append({
-                    'file': file_paths[len(results) + i],
+                    'file': str(batch_files[i]),
                     'probabilities': prob.cpu().numpy(),
-                    'prediction': 'spoof' if pred.item() == 1 else 'bonafide',
+                    'prediction': 'spoof' if pred.item() == 1 else 'genuine',
                     'confidence': prob[pred].item()
                 })
             current_batch = []
+            batch_files = []
 
     # Process remaining files
     if current_batch:
         batch_tensor = torch.stack(current_batch).to(device)
-        probs, preds = model.predict_batch(batch_tensor)
+        with torch.no_grad():
+            _, output = model(batch_tensor)
+            probs = torch.softmax(output, dim=1)
+            preds = output.argmax(dim=1)
 
         for i, (prob, pred) in enumerate(zip(probs, preds)):
             results.append({
-                'file': file_paths[len(results) + i],
+                'file': str(batch_files[i]),
                 'probabilities': prob.cpu().numpy(),
-                'prediction': 'spoof' if pred.item() == 1 else 'bonafide',
+                'prediction': 'spoof' if pred.item() == 1 else 'genuine',
                 'confidence': prob[pred].item()
             })
 

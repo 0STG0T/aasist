@@ -7,32 +7,26 @@ import torchaudio
 import pandas as pd
 from torch.utils.data import Dataset
 
-def get_torchaudio_backend():
-    """Set torchaudio backend to soundfile for better compatibility"""
-    if torchaudio.get_audio_backend() != "soundfile":
-        torchaudio.set_audio_backend("soundfile")
-
 class ASVspoofDataset(Dataset):
     """Dataset class for loading audio files from CSV metadata"""
 
     def __init__(self, csv_path, sample_rate=16000, num_samples=64600):
         """
         Args:
-            csv_path: Path to CSV file containing 'path' and 'target' columns
+            csv_path: Path to CSV file containing 'wav_path' and 'label' columns
             sample_rate: Target sample rate for audio
             num_samples: Number of samples to pad/trim to
         """
         self.df = pd.read_csv(csv_path)
         self.sample_rate = sample_rate
         self.num_samples = num_samples
-        get_torchaudio_backend()
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        waveform, sr = torchaudio.load(row['path'])
+        waveform, sr = torchaudio.load(row['wav_path'])
 
         # Convert to mono if stereo
         if waveform.shape[0] > 1:
@@ -51,8 +45,8 @@ class ASVspoofDataset(Dataset):
             # Trim to target length
             waveform = waveform[:, :self.num_samples]
 
-        # Convert target string to integer
-        target = 1 if row['target'].lower() == 'spoof' else 0
+        # Convert label to integer (0 for genuine, 1 for spoof)
+        target = int(row['label'])
 
         return waveform.squeeze(0), torch.tensor(target, dtype=torch.long)
 

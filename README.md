@@ -4,10 +4,13 @@ This repository provides an implementation of the AASIST model for audio anti-sp
 
 ## Features
 - CSV-based dataset support for flexible data loading
-- Multi-GPU training support
-- Batch prediction capabilities
+- Single/Multi-GPU training support with automatic device selection
+- Batch prediction capabilities with GPU acceleration
 - Enhanced AASIST-LARGE model variant
 - Easy-to-use prediction interface
+- Automatic mixed precision (AMP) training
+- Robust model checkpointing and state management
+- Memory-efficient data loading with configurable workers
 
 ## Installation
 ```bash
@@ -23,9 +26,14 @@ python train.py \
     --train_csv path/to/train.csv \
     --val_csv path/to/val.csv \
     --model_save_path models/weights/AASIST_LARGE.pth \
-    --config_path config/AASIST_LARGE.conf \
-    --num_gpus 2
+    --config_path config/AASIST_LARGE.conf
 ```
+
+The training script automatically:
+- Selects the best available device (GPU/CPU)
+- Enables automatic mixed precision when GPU is available
+- Saves both model weights and full checkpoints
+- Maintains best model based on validation loss
 
 ### Prediction
 For single file prediction:
@@ -47,16 +55,24 @@ python predict.py \
 
 ## CSV Format
 The training and validation CSV files should have the following columns:
-- `path`: Absolute path to the audio file
-- `target`: Label ('spoof' or 'bonafide')
+- `wav_path`: Absolute path to the audio file
+- `label`: Integer label (0 for genuine, 1 for spoof)
 
 ## Model Architecture
 - AASIST: Base model implementation
 - AASIST-LARGE: Enhanced model with increased capacity
-  - Doubled filter sizes
-  - Increased GAT dimensions
-  - Larger first convolution layer
-  - Additional dropout for better regularization
+  - Doubled filter sizes in all convolutional layers
+  - Increased GAT attention dimensions
+  - Larger first convolution layer (64 -> 128 channels)
+  - Additional dropout layers (0.5) for better regularization
+  - Improved batch normalization placement
+
+## Performance Optimizations
+- Efficient data loading with automatic worker scaling
+- GPU memory optimization with gradient scaling
+- Automatic mixed precision training support
+- Robust error handling and state management
+- Configurable batch sizes for both training and inference
 
 ## Citation
 ```

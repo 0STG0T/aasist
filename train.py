@@ -9,8 +9,9 @@ from torch.utils.data import DataLoader
 import json
 from pathlib import Path
 from tqdm import tqdm
-from data_utils_csv import ASVspoofDataset, get_torchaudio_backend
+from data_utils_csv import ASVspoofDataset
 from models.AASIST_LARGE import AASIST_LARGE
+from torch.amp import autocast, GradScaler
 
 def train_model(
     train_csv,
@@ -19,7 +20,7 @@ def train_model(
     config_path="config/AASIST_LARGE.conf"
 ):
     """
-    Train the AASIST model using CSV dataset on a single GPU
+    Train the AASIST model using CSV dataset with GPU support and mixed precision
     Args:
         train_csv: Path to training CSV file
         val_csv: Path to validation CSV file
@@ -42,13 +43,14 @@ def train_model(
     train_dataset = ASVspoofDataset(train_csv)
     val_dataset = ASVspoofDataset(val_csv)
 
-    # Create data loaders
+    # Create data loaders with proper GPU memory pinning
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
         num_workers=2,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=True if torch.cuda.is_available() else False
     )
 
     val_loader = DataLoader(
@@ -56,26 +58,34 @@ def train_model(
         batch_size=config['batch_size'],
         shuffle=False,
         num_workers=2,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=True if torch.cuda.is_available() else False
     )
 
-    # Initialize model
+    # Initialize model and move to GPU if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nUsing device: {device}")
     print(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}\n")
 
-    model = AASIST_LARGE(config.get('model_config', {})).to(device)
+    model = AASIST_LARGE(config.get('model_config', {}))
+    if torch.cuda.is_available():
+        model = torch.nn.DataParallel(model)
+    model = model.to(device)
 
-    # Loss and optimizer
+    # Loss, optimizer and mixed precision scaler
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config.get('optim_config', {}).get('base_lr', 0.0001),
         weight_decay=config.get('optim_config', {}).get('weight_decay', 0.0001)
     )
+    scaler = GradScaler(enabled=torch.cuda.is_available())
 
     # Training loop
     best_val_loss = float('inf')
+    checkpoint_dir = Path(model_save_path).parent / 'checkpoints'
+    checkpoint_dir.mkdir(exist_ok=True)
+
     for epoch in range(config['num_epochs']):
         # Training phase
         model.train()
@@ -86,12 +96,19 @@ def train_model(
         train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]')
         for batch_idx, (data, target) in enumerate(train_pbar):
             data, target = data.to(device), target.to(device)
-
             optimizer.zero_grad()
-            _, output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
-            optimizer.step()
+
+            with autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', enabled=torch.cuda.is_available()):
+                _, output = model(data)
+                loss = criterion(output, target)
+
+            if torch.cuda.is_available():
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
             train_loss += loss.item()
             pred = output.argmax(dim=1)
@@ -116,8 +133,9 @@ def train_model(
         with torch.no_grad():
             for data, target in val_pbar:
                 data, target = data.to(device), target.to(device)
-                _, output = model(data)
-                loss = criterion(output, target)
+                with autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', enabled=torch.cuda.is_available()):
+                    _, output = model(data)
+                    loss = criterion(output, target)
 
                 val_loss += loss.item()
                 pred = output.argmax(dim=1)
@@ -132,11 +150,36 @@ def train_model(
         val_loss /= len(val_loader)
         val_accuracy = 100. * correct_val / total_val
 
+        # Save checkpoint
+        checkpoint = {
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_loss': avg_train_loss,
+            'val_loss': val_loss,
+            'train_acc': train_accuracy,
+            'val_acc': val_accuracy,
+            'config': config
+        }
+
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), model_save_path)
+            # Save just the model state dict for inference
+            if isinstance(model, torch.nn.DataParallel):
+                torch.save(model.module.state_dict(), model_save_path)
+            else:
+                torch.save(model.state_dict(), model_save_path)
             print(f'\n✓ New best model saved! (val_loss: {val_loss:.4f})')
+
+            # Save full checkpoint
+            checkpoint_path = checkpoint_dir / 'best_checkpoint.pth'
+            torch.save(checkpoint, checkpoint_path)
+
+        # Save periodic checkpoint
+        if (epoch + 1) % 10 == 0:
+            checkpoint_path = checkpoint_dir / f'checkpoint_epoch_{epoch+1}.pth'
+            torch.save(checkpoint, checkpoint_path)
 
         print(f'\nEpoch {epoch+1} Summary:')
         print(f'Train Loss: {avg_train_loss:.4f} | Train Accuracy: {train_accuracy:.2f}%')
@@ -152,38 +195,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     train_model(**vars(args))
-
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--train_csv', required=True)
-    parser.add_argument('--val_csv', required=True)
-    parser.add_argument('--model_save_path', required=True)
-    parser.add_argument('--config_path', default='config/AASIST_LARGE.conf')
-
-    args = parser.parse_args()
-    train_model(**vars(args))
-
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--train_csv', required=True)
-    parser.add_argument('--val_csv', required=True)
-    parser.add_argument('--model_save_path', required=True)
-    parser.add_argument('--config_path', default='config/AASIST_LARGE.conf')
-
-    args = parser.parse_args()
-    train_model(**vars(args))
-
-        # Save best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), model_save_path)
-            print(f'\n✓ New best model saved! (val_loss: {val_loss:.4f})')
-
-        print(f'\nEpoch {epoch+1} Summary:')
-        print(f'Train Loss: {avg_train_loss:.4f} | Train Accuracy: {train_accuracy:.2f}%')
-        print(f'Val Loss: {val_loss:.4f} | Val Accuracy: {val_accuracy:.2f}%\n')
 
 if __name__ == '__main__':
     import argparse

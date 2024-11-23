@@ -1,0 +1,3 @@
+wav_path,label
+/path/to/test1.wav,0
+/path/to/test2.wav,1
