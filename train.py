@@ -1,5 +1,5 @@
 """
-Training script for AASIST models with CSV dataset support and multi-GPU training
+Training script for AASIST models with CSV dataset support
 """
 
 import os
@@ -17,7 +17,7 @@ def train_model(
     val_csv,
     model_save_path,
     config_path="config/AASIST_LARGE.conf",
-    num_gpus=1  # Changed default to 1
+    num_gpus=1
 ):
     """
     Train the AASIST model using CSV dataset
@@ -57,13 +57,6 @@ def train_model(
     model = AASIST_LARGE(config['model_config'])
     model = model.cuda()
 
-    if num_gpus > 1:
-        model = DistributedDataParallel(
-            model,
-            device_ids=[dist.get_rank()],
-            output_device=dist.get_rank()
-        )
-
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
@@ -102,6 +95,7 @@ def train_model(
                 'acc': f'{100.*correct_train/total_train:.2f}%'
             })
 
+        train_pbar.close()
         avg_train_loss = train_loss / len(train_loader)
         train_accuracy = 100. * correct_train / total_train
 
@@ -113,7 +107,6 @@ def train_model(
 
         # Validation progress bar
         val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
-
         with torch.no_grad():
             for data, target in val_pbar:
                 data, target = data.cuda(), target.cuda()
@@ -121,34 +114,28 @@ def train_model(
                 loss = criterion(output, target)
                 val_loss += loss.item()
                 pred = output.argmax(dim=1)
-                correct += pred.eq(target).sum().item()
+                correct_val += pred.eq(target).sum().item()
+                total_val += target.size(0)
 
                 # Update progress bar
-                if dist.get_rank() == 0:
-                    gpu = GPUtil.getGPUs()[dist.get_rank()]
-                    val_pbar.set_postfix({
-                        'loss': f'{loss.item():.4f}',
-                        'GPU mem': f'{gpu.memoryUsed}MB'
-                    })
+                val_pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'acc': f'{100.*correct_val/total_val:.2f}%'
+                })
 
         val_pbar.close()
         val_loss /= len(val_loader)
-        accuracy = correct / len(val_dataset)
+        val_accuracy = 100. * correct_val / total_val
 
         # Save best model
-        if val_loss < best_val_loss and dist.get_rank() == 0:
+        if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), model_save_path)
             print(f'\n✓ New best model saved! (val_loss: {val_loss:.4f})')
 
-        if dist.get_rank() == 0:
-            print(f'\nEpoch {epoch+1} Summary:')
-            print(f'Train Loss: {avg_train_loss:.4f}')
-            print(f'Val Loss: {val_loss:.4f}')
-            print(f'Val Accuracy: {accuracy:.4f}\n')
-
-    if num_gpus > 1:
-        dist.destroy_process_group()
+        print(f'\nEpoch {epoch+1} Summary:')
+        print(f'Train Loss: {avg_train_loss:.4f} | Train Accuracy: {train_accuracy:.2f}%')
+        print(f'Val Loss: {val_loss:.4f} | Val Accuracy: {val_accuracy:.2f}%\n')
 
 if __name__ == '__main__':
     import argparse
@@ -157,7 +144,7 @@ if __name__ == '__main__':
     parser.add_argument('--val_csv', required=True)
     parser.add_argument('--model_save_path', required=True)
     parser.add_argument('--config_path', default='config/AASIST_LARGE.conf')
-    parser.add_argument('--num_gpus', type=int, default=2)
+    parser.add_argument('--num_gpus', type=int, default=1)
 
     args = parser.parse_args()
     train_model(**vars(args))
