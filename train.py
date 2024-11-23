@@ -1,5 +1,5 @@
 """
-Training script for AASIST models with CSV dataset support
+Training script for AASIST models with single GPU support
 """
 
 import os
@@ -16,17 +16,15 @@ def train_model(
     train_csv,
     val_csv,
     model_save_path,
-    config_path="config/AASIST_LARGE.conf",
-    num_gpus=1
+    config_path="config/AASIST_LARGE.conf"
 ):
     """
-    Train the AASIST model using CSV dataset
+    Train the AASIST model using CSV dataset on a single GPU
     Args:
         train_csv: Path to training CSV file
         val_csv: Path to validation CSV file
         model_save_path: Path to save trained model
         config_path: Path to model configuration file
-        num_gpus: Number of GPUs to use for training (default: 1)
     """
     # Load configuration
     with open(config_path, 'r') as f:
@@ -53,9 +51,9 @@ def train_model(
         pin_memory=True
     )
 
-    # Create model
-    model = AASIST_LARGE(config['model_config'])
-    model = model.cuda()
+    # Initialize model on GPU
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = AASIST_LARGE(config['model_config']).to(device)
 
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss()
@@ -68,17 +66,17 @@ def train_model(
     # Training loop
     best_val_loss = float('inf')
     for epoch in range(config['num_epochs']):
+        # Training phase
         model.train()
         train_loss = 0
         correct_train = 0
         total_train = 0
 
-        # Training progress bar
         train_pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]')
-        for data, target in train_pbar:
-            data, target = data.cuda(), target.cuda()
-            optimizer.zero_grad()
+        for batch_idx, (data, target) in enumerate(train_pbar):
+            data, target = data.to(device), target.to(device)
 
+            optimizer.zero_grad()
             _, output = model(data)
             loss = criterion(output, target)
             loss.backward()
@@ -89,41 +87,37 @@ def train_model(
             correct_train += pred.eq(target).sum().item()
             total_train += target.size(0)
 
-            # Update progress bar
             train_pbar.set_postfix({
                 'loss': f'{loss.item():.4f}',
                 'acc': f'{100.*correct_train/total_train:.2f}%'
             })
 
-        train_pbar.close()
         avg_train_loss = train_loss / len(train_loader)
         train_accuracy = 100. * correct_train / total_train
 
-        # Validation
+        # Validation phase
         model.eval()
         val_loss = 0
         correct_val = 0
         total_val = 0
 
-        # Validation progress bar
         val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
         with torch.no_grad():
             for data, target in val_pbar:
-                data, target = data.cuda(), target.cuda()
+                data, target = data.to(device), target.to(device)
                 _, output = model(data)
                 loss = criterion(output, target)
+
                 val_loss += loss.item()
                 pred = output.argmax(dim=1)
                 correct_val += pred.eq(target).sum().item()
                 total_val += target.size(0)
 
-                # Update progress bar
                 val_pbar.set_postfix({
                     'loss': f'{loss.item():.4f}',
                     'acc': f'{100.*correct_val/total_val:.2f}%'
                 })
 
-        val_pbar.close()
         val_loss /= len(val_loader)
         val_accuracy = 100. * correct_val / total_val
 
@@ -144,7 +138,6 @@ if __name__ == '__main__':
     parser.add_argument('--val_csv', required=True)
     parser.add_argument('--model_save_path', required=True)
     parser.add_argument('--config_path', default='config/AASIST_LARGE.conf')
-    parser.add_argument('--num_gpus', type=int, default=1)
 
     args = parser.parse_args()
     train_model(**vars(args))
