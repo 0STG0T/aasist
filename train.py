@@ -22,16 +22,26 @@ def train_model(train_csv, val_csv, model_save_path, config_path="config/AASIST_
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
 
+    # Memory optimization settings
+    torch.backends.cudnn.benchmark = True
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Reduce batch size and add gradient accumulation
+    effective_batch_size = config['batch_size']
+    actual_batch_size = effective_batch_size // 4  # Reduce memory usage
+    accumulation_steps = 4
+
     # Create datasets
     train_dataset = ASVspoofDataset(train_csv)
     val_dataset = ASVspoofDataset(val_csv)
 
     print(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}\n")
 
-    # Create data loaders
+    # Create data loaders with reduced batch size
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config['batch_size'],
+        batch_size=actual_batch_size,
         shuffle=True,
         num_workers=2,
         pin_memory=True if torch.cuda.is_available() else False,
@@ -40,7 +50,7 @@ def train_model(train_csv, val_csv, model_save_path, config_path="config/AASIST_
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config['batch_size'],
+        batch_size=actual_batch_size,
         shuffle=False,
         num_workers=2,
         pin_memory=True if torch.cuda.is_available() else False,
@@ -59,6 +69,7 @@ def train_model(train_csv, val_csv, model_save_path, config_path="config/AASIST_
 
     # Training loop
     best_val_loss = float('inf')
+    optimizer.zero_grad()  # Initial gradient clear
 
     for epoch in range(config['num_epochs']):
         model.train()
@@ -71,15 +82,16 @@ def train_model(train_csv, val_csv, model_save_path, config_path="config/AASIST_
         for batch_idx, (inputs, targets) in enumerate(train_pbar):
             inputs, targets = inputs.to(device), targets.to(device)
 
-            optimizer.zero_grad()
-
             with autocast(device_type=device.type):
                 outputs = model(inputs)
-                loss = criterion(outputs, targets)
+                loss = criterion(outputs, targets) / accumulation_steps  # Scale loss
 
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+
+            if (batch_idx + 1) % accumulation_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
 
             train_loss += loss.item()
             _, predicted = outputs.max(1)
