@@ -26,7 +26,7 @@ def train_model(
         model_save_path: Path to save trained model
         config_path: Path to model configuration file
     """
-    # Load configuration and set defaults
+    # Load configuration
     config_path = Path(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -34,52 +34,44 @@ def train_model(
     with open(config_path, 'r') as f:
         config = json.load(f)
 
-    # Set default values if not present
+    # Set default values
     config.setdefault('batch_size', 16)
     config.setdefault('num_epochs', 100)
-    config.setdefault('optim_config', {})
-    config['optim_config'].setdefault('base_lr', 0.0001)
-    config['optim_config'].setdefault('weight_decay', 0.0001)
 
     # Create datasets
     train_dataset = ASVspoofDataset(train_csv)
     val_dataset = ASVspoofDataset(val_csv)
 
-    # Create data loaders with error handling
-    try:
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=config['batch_size'],
-            shuffle=True,
-            num_workers=2,
-            pin_memory=True
-        )
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True if torch.cuda.is_available() else False
+    )
 
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=config['batch_size'],
-            shuffle=False,
-            num_workers=2,
-            pin_memory=True
-        )
-    except Exception as e:
-        raise RuntimeError(f"Error creating data loaders: {str(e)}")
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True if torch.cuda.is_available() else False
+    )
 
-    # Initialize model on GPU with error handling
+    # Initialize model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print(f"\nUsing device: {device}")
+    print(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}\n")
 
-    try:
-        model = AASIST_LARGE(config.get('model_config', {})).to(device)
-    except Exception as e:
-        raise RuntimeError(f"Error creating model: {str(e)}")
+    model = AASIST_LARGE(config.get('model_config', {})).to(device)
 
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=config['optim_config']['base_lr'],
-        weight_decay=config['optim_config']['weight_decay']
+        lr=config.get('optim_config', {}).get('base_lr', 0.0001),
+        weight_decay=config.get('optim_config', {}).get('weight_decay', 0.0001)
     )
 
     # Training loop
